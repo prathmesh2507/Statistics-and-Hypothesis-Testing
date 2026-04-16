@@ -123,6 +123,21 @@ class Settings:
             "True"
         ).lower() == "true"
     )
+    
+    #─────────────── Memory System─────────────────────────────
+    # ── Memory System ────────────────────────────────────────
+
+    CHROMA_DB_DIR: Path = field(
+    default_factory=lambda: _PROJECT_ROOT / "data" / "chroma"
+)
+
+    MEMORY_COLLECTION: str = field(
+    default_factory=lambda: "eva_memories"
+)
+
+    MEMORY_TOP_K: int = field(
+    default_factory=lambda: 5
+)
 
     # ── Personality ────────────────────────────────────────────
     EVA_NAME: str = field(
