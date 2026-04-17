@@ -1,0 +1,39 @@
+# ─── Core Python ──────────────────────────────────────────────
+python-dotenv>=1.0.0
+
+# ─── Audio I/O ────────────────────────────────────────────────
+sounddevice>=0.4.6
+numpy>=1.24.0
+scipy>=1.11.0
+
+# ─── Voice Activity Detection ─────────────────────────────────
+torch>=2.1.0           # Silero VAD requires torch
+torchaudio>=2.1.0
+
+# ─── Speech-to-Text ───────────────────────────────────────────
+faster-whisper>=1.0.0
+
+# ─── LLM (Ollama client) ──────────────────────────────────────
+requests>=2.31.0
+httpx>=0.25.0          # async-ready ollama calls
+
+# ─── TTS (Phase 1 fallback — Piper replaces later) ────────────
+pyttsx3>=2.90
+
+# ─── Logging / Utils ─────────────────────────────────────────
+rich>=13.7.0           # pretty terminal output
+colorama>=0.4.6
+
+# ─── Memory (Phase 2 — install now, wire later) ───────────────
+pymongo>=4.6.0
+chromadb>=0.4.22
+sentence-transformers>=2.3.0
+
+# ─── Dev / Testing ────────────────────────────────────────────
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+
+# ─── Neural TTS (XTTS-v2) ─────────────────────────────────────        # Coqui TTS — includes XTTS-v2
+soundfile>=0.12.1      # WAV read/write for reference + cache files
+chromadb>=0.4.22
+sentence-transformers>=2.3.0
