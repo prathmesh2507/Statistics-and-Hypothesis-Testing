@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+venv/
+.venv/
+env/
+ENV/
+
+# Python Distribution
+build/
+dist/
+*.egg-info/
+
+# Audio
+*.wav
+*.mp3
+
+# Environment
+.env
+
+# Logs
+logs/
+*.log
+
+# Models
+models/
+*.gguf
+
+# ChromaDB
+chromadb/
+vector_store/
+
+# Mongo Dumps
+dump/
+
+# VS Code
+.vscode/
+
+# JetBrains
+.idea/
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# Temporary
+temp/
+tmp/
+
+# Jupyter
+.ipynb_checkpoints/
