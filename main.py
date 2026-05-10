@@ -42,14 +42,16 @@ from brain.personality import eva_personality
 from brain.llm_engine import LLMEngine
 from brain.context_manager import ContextManager
 from brain.response_generator import ResponseGenerator
+from speech import listener
 from speech.listener import VoiceListener
 from speech.transcriber import Transcriber
-from speech.tts import TTSEngine
 from memory.conversation_store import ConversationStore
 from utils.logger import get_root_logger
+from speech.tts import PiperTTS
 
 logger = get_root_logger()
 console = Console()
+
 
 # ── Graceful Shutdown ──────────────────────────────────────────
 _running = True
@@ -113,7 +115,7 @@ def build_components():
 
     # TTS
     try:
-        tts = TTSEngine(settings, backend="pyttsx3")
+        tts = PiperTTS(settings)
     except Exception as e:
         console.print(f"\n[bold yellow]⚠️  TTS Error:[/bold yellow] {e} (continuing without TTS)")
         tts = None
@@ -190,16 +192,19 @@ def run_conversation_loop(listener, transcriber, tts, context, responder, store)
                 continue
 
             console.print(f"[bold cyan]{settings.EVA_NAME}:[/bold cyan] {response}\n")
+            tts.speak(response)
 
             # Persist assistant turn
             store.add_turn(session_id, "assistant", response)
 
             # ── Step 4: Speak ─────────────────────────────────
             if tts:
+                listener.is_assistant_speaking = True
                 tts.speak(response)
+                listener.is_assistant_speaking = False
                 listener._drain_queue()
                 import time
-                time.sleep(0.3) 
+                time.sleep(0.4)
 
         except KeyboardInterrupt:
             _running = False

@@ -101,6 +101,28 @@ class Settings:
     LOG_FILE: str = field(
         default_factory=lambda: os.getenv("LOG_FILE", "./logs/eva.log")
     )
+    
+    # ── Piper TTS ──────────────────────────────────────────────
+    PIPER_PATH: str = field(
+        default_factory=lambda: os.getenv(
+            "PIPER_PATH",
+            "./models/piper/piper.exe"
+        )
+    )
+
+    VOICE_MODEL: str = field(
+        default_factory=lambda: os.getenv(
+            "VOICE_MODEL",
+            "./models/piper/voices/en_US-lessac-medium.onnx"
+        )
+    )
+
+    TTS_ENABLED: bool = field(
+        default_factory=lambda: os.getenv(
+            "TTS_ENABLED",
+            "True"
+        ).lower() == "true"
+    )
 
     # ── Personality ────────────────────────────────────────────
     EVA_NAME: str = field(

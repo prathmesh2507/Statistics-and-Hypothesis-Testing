@@ -1,179 +1,246 @@
 """
 speech/tts.py
 ─────────────
-Text-to-Speech engine for EVA.
+EVA's Text-to-Speech engine — XTTS-v2 powered.
+Drop-in replacement for old pyttsx3-based tts.py.
 
-Phase 1:  pyttsx3 (offline, cross-platform, no extra downloads)
-Phase 2:  Piper TTS (replace speak() internals — interface stays the same)
+External interface is IDENTICAL to before:
+    tts = TTSEngine(settings)
+    tts.speak("Hey yaar, kya chal raha hai?")   # blocking
+    tts.speak_async("...")                        # non-blocking
+    tts.stop()                                    # interrupt
 
-Piper TTS migration path:
-  - Install: pip install piper-tts
-  - Replace _speak_pyttsx3() with _speak_piper()
-  - Point to a downloaded .onnx model file
-  - Everything else stays identical
-
-Architecture goal: the rest of EVA only calls tts.speak(text).
-No other module knows which engine is running.
+Pipeline for each tts.speak(text) call:
+  1. ExpressiveSpeechProcessor splits text into SpeechSegments (per language)
+  2. For each segment:
+     a. Check TTSCache - play instantly if hit
+     b. VoiceManager.synthesize_stream() yields audio chunks
+     c. AudioPlayer.enqueue() plays chunk while next is synthesizing
+     d. Cache the full audio for future reuse
+  3. AudioPlayer.wait_done() blocks until all audio is done
 """
 
 from __future__ import annotations
 
-import io
-import subprocess
 import threading
+import time
 from pathlib import Path
-from typing import Literal
+from typing import Optional
 
 import numpy as np
 
-from utils.logger import get_logger
-from utils.helpers import sanitize_for_tts
+from speech.voice_manager import VoiceManager
+from speech.audio_player import AudioPlayer, StreamingPlaybackSession
+from speech.tts_cache import TTSCache
+from speech.expressive_speech import ExpressiveSpeechProcessor, SpeechSegment
 from config.settings import Settings
+from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-TTSBackend = Literal["pyttsx3", "piper"]
+_DEFAULT_REFERENCE = Path("data/voices/eva_reference.wav")
 
 
 class TTSEngine:
     """
-    Speaks text aloud using the configured backend.
-
-    Usage:
-        tts = TTSEngine(settings)
-        tts.speak("Haan yaar, kya scene hai?")
+    Production TTS engine for EVA using XTTS-v2.
+    Same interface as old pyttsx3 engine — just better in every way.
     """
 
-    def __init__(self, settings: Settings, backend: TTSBackend = "pyttsx3"):
+    def __init__(
+        self,
+        settings: Settings,
+        reference_wav: Optional[str] = None,
+        backend: str = "xtts",
+    ):
         self.settings = settings
-        self.backend = backend
-        self._engine = None
-        self._lock = threading.Lock()   # pyttsx3 is not thread-safe
-        self._setup()
 
-    # ── Setup ──────────────────────────────────────────────────
+        self._reference_wav = str(
+            Path(reference_wav) if reference_wav else
+            settings.PROJECT_ROOT / _DEFAULT_REFERENCE
+        )
 
-    def _setup(self):
-        if self.backend == "pyttsx3":
-            self._setup_pyttsx3()
-        elif self.backend == "piper":
-            self._setup_piper()
-        else:
-            raise ValueError(f"Unknown TTS backend: {self.backend}")
+        self._voice_manager = VoiceManager()
+        self._player = AudioPlayer(
+            sample_rate=VoiceManager.SAMPLE_RATE,
+            volume=1.0,
+        )
+        self._cache = TTSCache(
+            max_entries=300,
+            persist_dir=settings.DATA_DIR / "tts_cache",
+            sample_rate=VoiceManager.SAMPLE_RATE,
+        )
+        self._processor = ExpressiveSpeechProcessor(
+            max_chunk_chars=180,
+            normalize_hinglish=True,
+        )
 
-    def _setup_pyttsx3(self):
+        self._is_speaking = threading.Event()
+        self._initialized = False
+        self._load()
+
+    # ── Init ───────────────────────────────────────────────────
+
+    def _load(self) -> None:
+        ref_path = Path(self._reference_wav)
+
+        if not ref_path.exists():
+            logger.warning(
+                f"[yellow]Reference WAV not found: {ref_path}[/yellow]\n"
+                f"Run:  python speech/setup_voice.py\n"
+                f"This records your 10-second voice sample for XTTS-v2."
+            )
+            self._try_create_fallback_reference()
+
         try:
-            import pyttsx3
-            self._engine = pyttsx3.init()
-            # Tune voice properties
-            self._engine.setProperty("rate", 165)    # words per minute (default ~200, too fast)
-            self._engine.setProperty("volume", 0.9)
+            self._voice_manager.load(str(ref_path))
+            self._player.start()
 
-            # Try to select a pleasant voice
-            voices = self._engine.getProperty("voices")
-            if voices:
-                # Prefer female voice if available (index 1 on most systems)
-                preferred = next(
-                    (v for v in voices if "female" in v.name.lower() or "zira" in v.name.lower()),
-                    voices[0]
-                )
-                self._engine.setProperty("voice", preferred.id)
-                logger.debug(f"TTS voice: {preferred.name}")
+            t = threading.Thread(target=self._warm_cache, daemon=True, name="CacheWarmup")
+            t.start()
 
-            logger.info("[green]pyttsx3 TTS ready ✓[/green]")
+            self._initialized = True
+            logger.info("[green]TTSEngine (XTTS-v2) ready[/green]")
 
-        except ImportError:
-            logger.error("pyttsx3 not installed. Run: pip install pyttsx3")
-            raise
         except Exception as exc:
-            logger.error(f"pyttsx3 init failed: {exc}")
+            logger.error(f"XTTS-v2 load failed: {exc}")
+            logger.error(
+                "Fixes:\n"
+                "  pip install TTS\n"
+                "  python speech/setup_voice.py\n"
+                "  Set WHISPER_DEVICE=cpu in .env to free VRAM"
+            )
             raise
 
-    def _setup_piper(self):
-        """
-        Phase 2 — Piper TTS setup.
-        Expects PIPER_MODEL_PATH in settings pointing to a .onnx file.
+    def _warm_cache(self) -> None:
+        time.sleep(3.0)
+        self._cache.warm_up(
+            synthesize_fn=lambda text, lang: self._voice_manager.synthesize(
+                text, lang, temperature=0.65
+            )
+        )
 
-        Download models from: https://rhasspy.github.io/piper-samples/
-        Recommended for Hinglish: use English model (en_US-lessac-medium)
-        """
-        # TODO Phase 2: implement Piper
-        # from piper import PiperVoice
-        # model_path = getattr(self.settings, "PIPER_MODEL_PATH", None)
-        # if not model_path:
-        #     raise ValueError("PIPER_MODEL_PATH not set in .env")
-        # self._piper_voice = PiperVoice.load(model_path)
-        logger.warning("Piper TTS not yet implemented — falling back to pyttsx3")
-        self.backend = "pyttsx3"
-        self._setup_pyttsx3()
+    def _try_create_fallback_reference(self) -> None:
+        try:
+            from speech.setup_voice import record_reference
+            ref_path = Path(self._reference_wav)
+            ref_path.parent.mkdir(parents=True, exist_ok=True)
+            logger.info("Auto-recording 10s voice sample from microphone...")
+            record_reference(output_path=str(ref_path), duration=10)
+        except Exception as exc:
+            logger.warning(f"Auto-record failed ({exc}). Run setup_voice.py manually.")
 
     # ── Public API ─────────────────────────────────────────────
 
     def speak(self, text: str) -> None:
-        """
-        Speak `text` aloud.
-
-        Automatically sanitizes text (strips markdown, code blocks, URLs)
-        before passing to the TTS engine.
-
-        Blocks until speech completes.
-        """
+        """Synthesize and speak text. Blocks until complete."""
         if not text or not text.strip():
             return
-
-        clean_text = sanitize_for_tts(text)
-        if not clean_text:
+        if not self._initialized:
+            logger.warning("TTSEngine not initialized.")
             return
 
-        logger.debug(f"TTS speaking: '{clean_text[:80]}...'")
-
-        if self.backend == "pyttsx3":
-            self._speak_pyttsx3(clean_text)
-        elif self.backend == "piper":
-            self._speak_piper(clean_text)
+        self._is_speaking.set()
+        try:
+            self._speak_internal(text)
+        except Exception as exc:
+            logger.error(f"TTS error: {exc}", exc_info=True)
+        finally:
+            self._is_speaking.clear()
 
     def speak_async(self, text: str) -> threading.Thread:
-        """
-        Non-blocking speak. Returns the thread so caller can join() if needed.
-        Useful for future UI overlays.
-        """
-        t = threading.Thread(target=self.speak, args=(text,), daemon=True)
+        """Non-blocking speak. Returns thread."""
+        t = threading.Thread(target=self.speak, args=(text,), daemon=True, name="EVA-TTS")
         t.start()
         return t
 
-    # ── Backend Implementations ────────────────────────────────
+    def stop(self) -> None:
+        """Immediately interrupt playback."""
+        self._player.stop()
+        self._is_speaking.clear()
 
-    def _speak_pyttsx3(self, text: str) -> None:
-        with self._lock:
-            try:
-                self._engine.say(text)
-                self._engine.runAndWait()
-            except Exception as exc:
-                logger.error(f"pyttsx3 speak failed: {exc}")
+    @property
+    def is_speaking(self) -> bool:
+        return self._is_speaking.is_set()
 
-    def _speak_piper(self, text: str) -> None:
-        """
-        Phase 2 placeholder.
-        Piper synthesis to wav → play via sounddevice.
-        """
-        # TODO Phase 2:
-        # import sounddevice as sd
-        # audio_bytes = io.BytesIO()
-        # self._piper_voice.synthesize(text, audio_bytes)
-        # audio_np = np.frombuffer(audio_bytes.getvalue(), dtype=np.int16)
-        # sd.play(audio_np / 32768.0, samplerate=22050)
-        # sd.wait()
-        pass
+    # ── Pipeline ───────────────────────────────────────────────
+
+    def _speak_internal(self, text: str) -> None:
+        """Full preprocessing -> synthesis -> streaming playback pipeline."""
+        processed = self._processor.process(text)
+        if processed.is_empty:
+            return
+
+        logger.debug(f"Speaking {len(processed.segments)} segment(s)")
+
+        with StreamingPlaybackSession(self._player) as session:
+            for segment in processed.segments:
+                if not segment.text.strip():
+                    continue
+
+                # Cache hit — instant playback
+                cached = self._cache.get(segment.text, segment.language)
+                if cached is not None:
+                    session.add(cached, pause_ms=segment.pause_after_ms)
+                    continue
+
+                # Stream synthesis + real-time playback
+                full_chunks: list[np.ndarray] = []
+                try:
+                    for audio_chunk in self._voice_manager.synthesize_stream(
+                        text=segment.text,
+                        language=segment.language,
+                        temperature=self._temperature_for(segment),
+                        speed=0.95,
+                        stream_chunk_size=20,
+                    ):
+                        session.add(audio_chunk)
+                        full_chunks.append(audio_chunk)
+
+                except Exception as exc:
+                    logger.error(f"Synthesis failed '{segment.text[:40]}': {exc}")
+                    continue
+
+                if segment.pause_after_ms > 0:
+                    session.add_pause(segment.pause_after_ms)
+
+                if full_chunks:
+                    self._cache.set(
+                        segment.text,
+                        segment.language,
+                        np.concatenate(full_chunks),
+                    )
+
+    def _temperature_for(self, segment: SpeechSegment) -> float:
+        text = segment.text
+        words = len(text.split())
+        if text.endswith("?"):
+            return 0.75
+        if words <= 4:
+            return 0.72
+        if words >= 20:
+            return 0.65
+        return 0.70
 
     # ── Utility ────────────────────────────────────────────────
 
-    def stop(self) -> None:
-        """Stop any currently playing speech."""
-        if self.backend == "pyttsx3" and self._engine:
-            try:
-                self._engine.stop()
-            except Exception:
-                pass
+    def set_voice(self, reference_wav: str) -> None:
+        """Hot-swap reference voice without reloading model."""
+        self._voice_manager.set_reference_voice(reference_wav)
+        self._cache.clear()
+
+    def presynthesize(self, text: str, language: str = "en") -> None:
+        if self._cache.get(text, language) is not None:
+            return
+        try:
+            audio = self._voice_manager.synthesize(text, language)
+            self._cache.set(text, language, audio)
+        except Exception as exc:
+            logger.warning(f"Presynthesize failed: {exc}")
 
     def __repr__(self) -> str:
-        return f"TTSEngine(backend={self.backend})"
+        return (
+            f"TTSEngine(XTTS-v2, "
+            f"device={self._voice_manager.device}, "
+            f"cache={self._cache.hit_rate_estimate})"
+        )
