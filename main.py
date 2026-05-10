@@ -47,7 +47,7 @@ from speech.listener import VoiceListener
 from speech.transcriber import Transcriber
 from memory.conversation_store import ConversationStore
 from utils.logger import get_root_logger
-from speech.tts import PiperTTS
+from speech.tts import TTSEngine
 
 logger = get_root_logger()
 console = Console()
@@ -115,7 +115,7 @@ def build_components():
 
     # TTS
     try:
-        tts = PiperTTS(settings)
+        tts = TTSEngine(settings)
     except Exception as e:
         console.print(f"\n[bold yellow]⚠️  TTS Error:[/bold yellow] {e} (continuing without TTS)")
         tts = None

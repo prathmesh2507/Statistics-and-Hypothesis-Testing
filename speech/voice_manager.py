@@ -28,6 +28,8 @@ import gc
 import threading
 from pathlib import Path
 from typing import Generator, Optional
+from unittest import result
+from xml.parsers.expat import model
 
 import numpy as np
 import torch
@@ -102,58 +104,60 @@ class VoiceManager:
     # ── Model Loading ──────────────────────────────────────────
 
     def load(self, reference_wav: str) -> None:
-        """
-        Load XTTS-v2 and compute voice conditioning from reference audio.
-
-        Args:
-            reference_wav: Path to a clean 6-30 second WAV file.
-                           Quality of this file directly determines voice quality.
-                           Recommended: 16-24 kHz, mono, no background noise.
-                           Indian English accent → best Hinglish output.
-
-        First call downloads XTTS-v2 weights (~1.7GB) to ~/.local/share/tts/
-        Subsequent calls load from cache instantly.
-        """
         from TTS.tts.configs.xtts_config import XttsConfig
         from TTS.tts.models.xtts import Xtts
         from TTS.utils.manage import ModelManager
 
         logger.info(f"Loading XTTS-v2 on {self._device}...")
-        self._free_vram()  # Clear any lingering activation cache
+        self._free_vram()
 
-        # ── Download / locate model files ──────────────────────
+        # ── Locate model files ─────────────────────────────────────
         manager = ModelManager()
-        try:
-            model_path, config_path, _ = manager.download_model(XTTS_MODEL_NAME)
-        except Exception as e:
-            # Newer TTS versions changed the return signature
-            result = manager.download_model(XTTS_MODEL_NAME)
-            model_path = result[0] if isinstance(result, (list, tuple)) else result
-            config_path = Path(model_path) / "config.json"
+        result = manager.download_model(XTTS_MODEL_NAME)
 
-        model_path = Path(model_path)
-        config_path = Path(config_path) if not isinstance(config_path, Path) else config_path
+    # TTS version differences: result can be (path, config, _) OR just path
+        if isinstance(result, (list, tuple)):
+            model_path = Path(result[0]) if result[0] else None
+            config_path = Path(result[1]) if len(result) > 1 and result[1] else None
+        else:
+            model_path = Path(result) if result else None
+            config_path = None
 
-        logger.info(f"Model path: {model_path}")
+        # If config_path is None or missing, find config.json inside model folder
+        if not config_path or not config_path.exists():
+            if model_path and model_path.is_dir():
+                config_path = model_path / "config.json"
+            elif model_path and model_path.is_file():
+                config_path = model_path.parent / "config.json"
 
-        # ── Load config ────────────────────────────────────────
+        if not model_path or not config_path or not config_path.exists():
+            raise RuntimeError(
+            f"Cannot locate XTTS-v2 config.json.\n"
+            f"  model_path: {model_path}\n"
+            f"  config_path: {config_path}\n"
+            f"Try: tts --list_models"
+        )
+
+        logger.info(f"Model: {model_path}")
+        logger.info(f"Config: {config_path}")
+
+    # ── Load config ────────────────────────────────────────────
         self._config = XttsConfig()
         self._config.load_json(str(config_path))
 
-        # ── Load model ─────────────────────────────────────────
+    # ── Load model ─────────────────────────────────────────────
         model = Xtts.init_from_config(self._config)
         model.load_checkpoint(
-            self._config,
-            checkpoint_dir=str(model_path),
-            use_deepspeed=False,
-            eval=True,
-        )
+        self._config,
+        checkpoint_dir=str(model_path if model_path.is_dir() else model_path.parent),
+        use_deepspeed=False,
+        eval=True,
+    )
 
-        # float16 saves ~50% VRAM on GPU (1.8GB instead of 3.5GB)
         if self._device == "cuda":
             model = model.half().cuda()
         else:
-            model.cpu()
+            model = model.cpu()
 
         model.eval()
         self._model = model
@@ -161,7 +165,7 @@ class VoiceManager:
         logger.info("XTTS-v2 weights loaded ✓")
         self._log_vram()
 
-        # ── Compute voice conditioning ─────────────────────────
+    # ── Compute voice conditioning ─────────────────────────────
         self.set_reference_voice(reference_wav)
 
     # ── Voice Reference ────────────────────────────────────────
