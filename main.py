@@ -90,7 +90,7 @@ def build_components():
 
     tts = None
     try:
-        tts = PiperTTS(settings, backend="xtts")
+        tts = PiperTTS(settings)
     except Exception as e:
         console.print(f"\n[bold yellow]⚠️  TTS Error:[/bold yellow] {e}")
         console.print("[yellow]Continuing without TTS — text-only mode.[/yellow]\n")
