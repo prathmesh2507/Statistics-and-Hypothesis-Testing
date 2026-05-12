@@ -123,21 +123,6 @@ class Settings:
             "True"
         ).lower() == "true"
     )
-    
-    #------------ XTTS ---------------------------------------------------------
-    TTS_ENGINE: str = field(
-    default_factory=lambda: os.getenv(
-        "TTS_ENGINE",
-        "xtts"
-        )
-    )
-
-    REFERENCE_VOICE: str = field(
-    default_factory=lambda: os.getenv(
-        "REFERENCE_VOICE",
-        "data/voices/eva_reference.wav"
-        )
-    )
 
     # ── Personality ────────────────────────────────────────────
     EVA_NAME: str = field(

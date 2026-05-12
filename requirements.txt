@@ -33,6 +33,5 @@ sentence-transformers>=2.3.0
 pytest>=7.4.0
 pytest-asyncio>=0.21.0
 
-# ─── Neural TTS (XTTS-v2) ─────────────────────────────────────
-TTS>=0.22.0            # Coqui TTS — includes XTTS-v2
+# ─── Neural TTS (XTTS-v2) ─────────────────────────────────────        # Coqui TTS — includes XTTS-v2
 soundfile>=0.12.1      # WAV read/write for reference + cache files
