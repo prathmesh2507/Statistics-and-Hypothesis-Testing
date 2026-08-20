@@ -119,8 +119,7 @@ The project uses the **Petrol Consumption Dataset**, which contains information 
 ```
 Statistics-with-Python/
 │
-├── stats.ipynb
-├── Petrol_Consumption.csv
+├── Statistics-and-Hypothesis-Testing.ipynb
 └── README.md
 ```
 
